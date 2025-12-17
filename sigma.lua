@@ -104,3 +104,80 @@ end
 
 -- Chạy
 equipBestRod()
+-- Backup method: Dùng getgc để tìm inventory data
+local function findRodsInMemory()
+    local rods = {}
+    
+    for _, obj in pairs(getgc(true)) do
+        if typeof(obj) == "table" then
+            -- Tìm tables có inventory item structure
+            if obj.Uuid and obj.ItemId and obj.Type == "Fishing Rods" then
+                -- Match với ReplicatedStorage để lấy tên
+                local itemData = game.ReplicatedStorage.Items:GetChildren()
+                for _, item in pairs(itemData) do
+                    local success, data = pcall(function() return require(item) end)
+                    if success and data.Data and data.Data.Id == obj.ItemId then
+                        table.insert(rods, {
+                            name = data.Data.Name,
+                            uuid = obj.Uuid,
+                            tier = data.Data.Tier or 0,
+                            clickPower = data.ClickPower or 0
+                        })
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
+    return rods
+end
+
+local function equipBestRodMemory()
+    print("===== SCANNING MEMORY =====")
+    
+    local rods = findRodsInMemory()
+    
+    if #rods == 0 then
+        warn("No rods found!")
+        return
+    end
+    
+    -- Sort
+    table.sort(rods, function(a, b)
+        if a.tier ~= b.tier then
+            return a.tier > b.tier
+        end
+        return a.clickPower > b.clickPower
+    end)
+    
+    -- Equip
+    local bestRod = rods[1]
+    print("Best rod:", bestRod.name, "Tier:", bestRod.tier)
+    
+    local args = {bestRod.uuid, "Fishing Rods"}
+    game:GetService("ReplicatedStorage"):WaitForChild("Packages")
+        :WaitForChild("_Index"):WaitForChild("sleitnick_net@0.2.0")
+        :WaitForChild("net"):WaitForChild("RE/EquipItem")
+        :FireServer(unpack(args))
+end
+
+equipBestRodMemory()
+local function autoEquipBest()
+    print("Method 1: Scanning UI...")
+    local rods = scanInventoryRods()
+    
+    if #rods == 0 then
+        print("Method 2: Scanning memory...")
+        rods = findRodsInMemory()
+    end
+    
+    if #rods > 0 then
+        -- Sort and equip logic here
+        equipBestRod()
+    else
+        warn("Could not find any rods! Try opening inventory first.")
+    end
+end
+
+autoEquipBest()
