@@ -1,183 +1,204 @@
--- Step 1: Lấy stats của tất cả rods từ ReplicatedStorage
-local function getRodStats()
-    local stats = {}
+-- POSITION CAPTURE TOOL - MOBILE VERSION
+local UserInputService = game:GetService("UserInputService")
+local player = game.Players.LocalPlayer
+
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("🎯 POSITION CAPTURE TOOL (MOBILE)")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("Tap CAPTURE button, then tap positions")
+print("")
+
+local capturing = false
+local capturedPositions = {}
+
+-- Create UI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PositionCapture"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = player.PlayerGui
+
+-- Capture Button
+local CaptureButton = Instance.new("TextButton")
+CaptureButton.Size = UDim2.new(0, 150, 0, 60)
+CaptureButton.Position = UDim2.new(0.5, -75, 0, 20)
+CaptureButton.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+CaptureButton.Text = "START CAPTURE"
+CaptureButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CaptureButton.TextSize = 20
+CaptureButton.Font = Enum.Font.SourceSansBold
+CaptureButton.ZIndex = 100
+CaptureButton.Parent = ScreenGui
+
+-- Stop Button
+local StopButton = Instance.new("TextButton")
+StopButton.Size = UDim2.new(0, 150, 0, 60)
+StopButton.Position = UDim2.new(0.5, -75, 0, 90)
+StopButton.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
+StopButton.Text = "STOP & SHOW"
+StopButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+StopButton.TextSize = 20
+StopButton.Font = Enum.Font.SourceSansBold
+StopButton.Visible = false
+StopButton.ZIndex = 100
+StopButton.Parent = ScreenGui
+
+-- Info Label
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Size = UDim2.new(0, 300, 0, 120)
+InfoLabel.Position = UDim2.new(0.5, -150, 0, 160)
+InfoLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+InfoLabel.BackgroundTransparency = 0.3
+InfoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+InfoLabel.TextSize = 18
+InfoLabel.Font = Enum.Font.SourceSansBold
+InfoLabel.TextWrapped = true
+InfoLabel.ZIndex = 100
+InfoLabel.Parent = ScreenGui
+
+-- Create marker function
+local function createMarker(position, index)
+    local marker = Instance.new("Frame")
+    marker.Size = UDim2.new(0, 30, 0, 30)
+    marker.Position = UDim2.new(0, position.X - 15, 0, position.Y - 15)
+    marker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    marker.BorderSizePixel = 3
+    marker.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    marker.ZIndex = 99
+    marker.Parent = ScreenGui
     
-    for _, item in pairs(game:GetService("ReplicatedStorage").Items:GetChildren()) do
-        local success, data = pcall(function() return require(item) end)
-        
-        if success and data.Data and data.Data.Type == "Fishing Rods" then
-            stats[data.Data.Name] = {
-                tier = data.Data.Tier or 0,
-                clickPower = data.ClickPower or 0,
-                resilience = data.Resilience or 0,
-                maxWeight = data.MaxWeight or 0,
-                baseLuck = data.RollData and data.RollData.BaseLuck or 0
-            }
-        end
-    end
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = tostring(index)
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 20
+    label.Font = Enum.Font.SourceSansBold
+    label.ZIndex = 99
+    label.Parent = marker
     
-    return stats
+    return marker
 end
 
--- Step 2: Scan inventory UI để lấy rod names + UUIDs
-local function scanInventoryRods()
-    local player = game.Players.LocalPlayer
-    local rods = {}
+-- Update info display
+local function updateInfo()
+    local text = "📍 Captured: " .. #capturedPositions .. "/3\n\n"
     
-    for _, gui in pairs(player.PlayerGui:GetDescendants()) do
-        -- Tìm ItemName labels
-        if gui.Name == "ItemName" and gui:IsA("TextLabel") then
-            local itemName = gui.Text
-            
-            -- Check nếu là rod
-            if itemName:lower():find("rod") then
-                local tile = gui.Parent.Parent -- Inner → Tile
-                
-                -- Thử lấy UUID từ Tile.Name
-                if tile.Name:match("%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x") then
-                    table.insert(rods, {
-                        name = itemName,
-                        uuid = tile.Name
-                    })
-                    print("Found:", itemName, "UUID:", tile.Name)
-                end
-            end
-        end
-    end
-    
-    return rods
-end
-
--- Step 3: Tìm và equip rod mạnh nhất
-local function equipBestRod()
-    print("===== FINDING BEST ROD =====")
-    
-    local rodStats = getRodStats()
-    local inventoryRods = scanInventoryRods()
-    
-    if #inventoryRods == 0 then
-        warn("No rods found in inventory! Make sure inventory is open.")
-        return
-    end
-    
-    -- Sort rods theo stats (Tier > ClickPower > MaxWeight)
-    table.sort(inventoryRods, function(a, b)
-        local statsA = rodStats[a.name]
-        local statsB = rodStats[b.name]
-        
-        if not statsA then return false end
-        if not statsB then return true end
-        
-        -- Compare tier trước
-        if statsA.tier ~= statsB.tier then
-            return statsA.tier > statsB.tier
-        end
-        
-        -- Nếu tier bằng nhau, compare click power
-        if statsA.clickPower ~= statsB.clickPower then
-            return statsA.clickPower > statsB.clickPower
-        end
-        
-        -- Cuối cùng compare max weight
-        return statsA.maxWeight > statsB.maxWeight
-    end)
-    
-    -- Equip best rod
-    local bestRod = inventoryRods[1]
-    local stats = rodStats[bestRod.name]
-    
-    print("\n===== EQUIPPING BEST ROD =====")
-    print("Name:", bestRod.name)
-    print("Tier:", stats.tier)
-    print("Click Power:", stats.clickPower)
-    print("Max Weight:", stats.maxWeight)
-    print("UUID:", bestRod.uuid)
-    
-    local args = {bestRod.uuid, "Fishing Rods"}
-    game:GetService("ReplicatedStorage"):WaitForChild("Packages")
-        :WaitForChild("_Index"):WaitForChild("sleitnick_net@0.2.0")
-        :WaitForChild("net"):WaitForChild("RE/EquipItem")
-        :FireServer(unpack(args))
-    
-    print("Done!")
-end
-
--- Chạy
-equipBestRod()
--- Backup method: Dùng getgc để tìm inventory data
-local function findRodsInMemory()
-    local rods = {}
-    
-    for _, obj in pairs(getgc(true)) do
-        if typeof(obj) == "table" then
-            -- Tìm tables có inventory item structure
-            if obj.Uuid and obj.ItemId and obj.Type == "Fishing Rods" then
-                -- Match với ReplicatedStorage để lấy tên
-                local itemData = game.ReplicatedStorage.Items:GetChildren()
-                for _, item in pairs(itemData) do
-                    local success, data = pcall(function() return require(item) end)
-                    if success and data.Data and data.Data.Id == obj.ItemId then
-                        table.insert(rods, {
-                            name = data.Data.Name,
-                            uuid = obj.Uuid,
-                            tier = data.Data.Tier or 0,
-                            clickPower = data.ClickPower or 0
-                        })
-                        break
-                    end
-                end
-            end
-        end
-    end
-    
-    return rods
-end
-
-local function equipBestRodMemory()
-    print("===== SCANNING MEMORY =====")
-    
-    local rods = findRodsInMemory()
-    
-    if #rods == 0 then
-        warn("No rods found!")
-        return
-    end
-    
-    -- Sort
-    table.sort(rods, function(a, b)
-        if a.tier ~= b.tier then
-            return a.tier > b.tier
-        end
-        return a.clickPower > b.clickPower
-    end)
-    
-    -- Equip
-    local bestRod = rods[1]
-    print("Best rod:", bestRod.name, "Tier:", bestRod.tier)
-    
-    local args = {bestRod.uuid, "Fishing Rods"}
-    game:GetService("ReplicatedStorage"):WaitForChild("Packages")
-        :WaitForChild("_Index"):WaitForChild("sleitnick_net@0.2.0")
-        :WaitForChild("net"):WaitForChild("RE/EquipItem")
-        :FireServer(unpack(args))
-end
-
-equipBestRodMemory()
-local function autoEquipBest()
-    print("Method 1: Scanning UI...")
-    local rods = scanInventoryRods()
-    
-    if #rods == 0 then
-        print("Method 2: Scanning memory...")
-        rods = findRodsInMemory()
-    end
-    
-    if #rods > 0 then
-        -- Sort and equip logic here
-        equipBestRod()
+    if #capturedPositions == 0 then
+        text = text .. "Next: Tap INVENTORY button"
+    elseif #capturedPositions == 1 then
+        text = text .. "Next: Tap ROD SLOT"
+    elseif #capturedPositions == 2 then
+        text = text .. "Next: Tap EXIT button"
     else
-        warn("Could not find any rods! Try opening inventory first.")
+        text = text .. "✅ All positions captured!\nTap STOP to finish"
     end
+    
+    InfoLabel.Text = text
 end
 
-autoEquipBest()
+updateInfo()
+
+-- Start capture button
+CaptureButton.MouseButton1Click:Connect(function()
+    capturing = true
+    CaptureButton.Visible = false
+    StopButton.Visible = true
+    InfoLabel.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+    print("✅ Capture mode ACTIVE - Tap positions now!")
+end)
+
+-- Stop button
+StopButton.MouseButton1Click:Connect(function()
+    capturing = false
+    StopButton.Visible = false
+    
+    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("📊 CAPTURED POSITIONS:")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    for i, pos in ipairs(capturedPositions) do
+        local name = ""
+        if i == 1 then name = "(OPEN INVENTORY)"
+        elseif i == 2 then name = "(ROD SLOT)"
+        elseif i == 3 then name = "(EXIT BUTTON)" end
+        
+        print(string.format("%d. X=%d, Y=%d %s", i, pos.X, pos.Y, name))
+    end
+    
+    print("\n📋 COPY THIS CODE:")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    if #capturedPositions >= 3 then
+        local code = string.format([[
+local positions = {
+    openInventory = Vector2.new(%d, %d),
+    rodSlot = Vector2.new(%d, %d),
+    exitButton = Vector2.new(%d, %d),
+}]], 
+            capturedPositions[1].X, capturedPositions[1].Y,
+            capturedPositions[2].X, capturedPositions[2].Y,
+            capturedPositions[3].X, capturedPositions[3].Y
+        )
+        print(code)
+        
+        -- Show on screen
+        InfoLabel.Text = "✅ DONE!\nCheck console (F9)\nfor code to copy"
+        InfoLabel.TextSize = 16
+        InfoLabel.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    else
+        print("⚠️ Need 3 positions! Only got " .. #capturedPositions)
+        InfoLabel.Text = "❌ Need 3 positions!\nOnly captured: " .. #capturedPositions
+        InfoLabel.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+    end
+    
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end)
+
+-- Capture touch input
+UserInputService.TouchTap:Connect(function(touchPositions, gameProcessed)
+    if not capturing then return end
+    if #capturedPositions >= 3 then return end
+    
+    -- Get first touch position
+    local position = touchPositions[1]
+    local x = math.floor(position.X)
+    local y = math.floor(position.Y)
+    
+    -- Check if tapped on UI buttons (skip those)
+    local isButton = false
+    local mousePos = Vector2.new(x, y)
+    
+    if CaptureButton.Visible then
+        local btnPos = CaptureButton.AbsolutePosition
+        local btnSize = CaptureButton.AbsoluteSize
+        if mousePos.X >= btnPos.X and mousePos.X <= btnPos.X + btnSize.X and
+           mousePos.Y >= btnPos.Y and mousePos.Y <= btnPos.Y + btnSize.Y then
+            isButton = true
+        end
+    end
+    
+    if StopButton.Visible then
+        local btnPos = StopButton.AbsolutePosition
+        local btnSize = StopButton.AbsoluteSize
+        if mousePos.X >= btnPos.X and mousePos.X <= btnPos.X + btnSize.X and
+           mousePos.Y >= btnPos.Y and mousePos.Y <= btnPos.Y + btnSize.Y then
+            isButton = true
+        end
+    end
+    
+    if isButton then return end
+    
+    -- Capture position
+    table.insert(capturedPositions, {X = x, Y = y})
+    
+    local name = ""
+    if #capturedPositions == 1 then name = "(INVENTORY)"
+    elseif #capturedPositions == 2 then name = "(ROD SLOT)"
+    elseif #capturedPositions == 3 then name = "(EXIT)" end
+    
+    print(string.format("✓ #%d: X=%d, Y=%d %s", #capturedPositions, x, y, name))
+    
+    createMarker(Vector2.new(x, y), #capturedPositions)
+    updateInfo()
+end)
