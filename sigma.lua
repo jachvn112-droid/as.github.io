@@ -1,9 +1,18 @@
 --[[
-    B4Hub Forge - Tween & Farm Module (Rewrite)
-    Chỉ chứa các chức năng:
-    - Hệ thống Tween (di chuyển)
-    - Farm Ore (đào quặng)
-    - Farm Mob (đánh quái)
+    ═══════════════════════════════════════════════════════════════
+    FARM MOB MODULE - Đánh quái tự động
+    ═══════════════════════════════════════════════════════════════
+    
+    Chức năng:
+    - Tự động tìm mob gần nhất
+    - Bay đến và tấn công mob
+    - Rút lui khi HP thấp
+    
+    Sử dụng:
+    local Farm = loadstring(game:HttpGet("YOUR_URL"))()
+    Farm.Config.selectedMobs = {"Zombie", "Skeleton"}
+    Farm.start()  -- Bật farm
+    Farm.stop()   -- Tắt farm
 ]]
 
 -- ═══════════════════════════════════════════════════════════════
@@ -24,30 +33,25 @@ local Config = {
     tweenSpeed = 120,           -- Tốc độ di chuyển (studs/giây)
     flyHeight = 3,              -- Độ cao bay so với mục tiêu
     
-    -- Ore Farm Settings
-    oreFarmEnabled = false,
-    selectedRockTypes = {"Pebble"},     -- ✅ Farm đá Pebble
-    selectedOreTypes = {"Pebble"},      -- ✅ Farm quặng Pebble
-    scanDistance = 500,         -- Phạm vi quét (studs)
-    maxRockTime = 4,            -- Thời gian tối đa đào 1 đá (giây)
-    mineInterval = 0.1,         -- Khoảng cách giữa các lần đập (giây)
-    pickaxeDamage = 0,          -- Sát thương cuốc hiện tại
-    
     -- Mob Farm Settings
-    mobFarmEnabled = false,
-    selectedMobs = {"Zombie"},          -- ✅ Farm mob Zombie
-    attackInterval = 0.1,       -- Khoảng cách giữa các lần đánh
-    safeHealthPercent = 30,     -- HP% thấp hơn sẽ rút lui
+    enabled = false,            -- Trạng thái farm
+    selectedMobs = {"Zombie"},  -- Danh sách mob muốn farm
+    attackInterval = 0.1,       -- Khoảng cách giữa các lần đánh (giây)
+    safeHealthPercent = 30,     -- HP% thấp hơn sẽ rút lui hồi máu
+    scanDistance = 500,         -- Phạm vi quét mob (studs)
+    
+    -- Positioning Settings
+    attackFromBehind = true,    -- ✅ Đứng phía sau mob để đánh
+    behindDistance = 5,         -- Khoảng cách phía sau mob (studs)
 }
 
 -- ═══════════════════════════════════════════════════════════════
 -- BIẾN TRẠNG THÁI
 -- ═══════════════════════════════════════════════════════════════
-local movementBusy = false      -- Khóa di chuyển (ngăn xung đột)
-local rockBlacklist = {}        -- Đá đã bỏ qua (ore sai)
+local movementBusy = false      -- Khóa di chuyển (ngăn xung đột tween)
 
 -- ═══════════════════════════════════════════════════════════════
--- HELPER FUNCTIONS (Hàm hỗ trợ)
+-- HELPER FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════
 
 --- Lấy Character của người chơi
@@ -68,6 +72,8 @@ local function getHumanoid()
 end
 
 --- Chuyển list thành set để tra cứu nhanh O(1)
+-- Input: {"Zombie", "Skeleton"}
+-- Output: {["Zombie"] = true, ["Skeleton"] = true}
 local function listToSet(list)
     local set = {}
     for _, v in ipairs(list or {}) do
@@ -76,7 +82,9 @@ local function listToSet(list)
     return set
 end
 
---- Chuẩn hóa tên mob (bỏ số cuối: "Zombie16" → "Zombie")
+--- Chuẩn hóa tên mob (bỏ số cuối)
+-- "Zombie16" → "Zombie"
+-- "Skeleton123" → "Skeleton"
 local function normalizeMobName(name)
     return (tostring(name):gsub("%d+$", ""))
 end
@@ -87,14 +95,15 @@ end
 
 --[[
     Di chuyển nhân vật đến vị trí mục tiêu bằng Tween
+    
     @param targetPos (Vector3) - Vị trí đích
-    @param speed (number) - Tốc độ di chuyển (studs/s), mặc định = Config.tweenSpeed
+    @param speed (number) - Tốc độ di chuyển (studs/s)
     
     Cách hoạt động:
-    1. Kiểm tra xem có tween khác đang chạy không (movementBusy)
-    2. Tính thời gian dựa trên khoảng cách và tốc độ
+    1. Chờ nếu đang có tween khác chạy
+    2. Tính thời gian = khoảng cách / tốc độ
     3. Tạo tween di chuyển HumanoidRootPart
-    4. Bay cao hơn mục tiêu 3 studs để tránh va chạm
+    4. Bay cao hơn mục tiêu flyHeight studs để tránh va chạm
 ]]
 local function tweenToPosition(targetPos, speed)
     local hrp = getHumanoidRootPart()
@@ -128,8 +137,13 @@ local function tweenToPosition(targetPos, speed)
 end
 
 --[[
-    Rút lui lên cao khi HP thấp (dùng cho farm mob)
-    Bay lên 60 studs, anchor tại chỗ, chờ hồi máu
+    Rút lui lên cao khi HP thấp
+    
+    Cách hoạt động:
+    1. Bay lên 60 studs
+    2. Anchor tại chỗ (đứng yên trên không)
+    3. Chờ hồi máu đến safeHealthPercent + 10%
+    4. Bay trở lại vị trí cũ
 ]]
 local function retreatToSafety()
     local hum = getHumanoid()
@@ -156,7 +170,9 @@ local function retreatToSafety()
     local targetPercent = (Config.safeHealthPercent or 0) + 10
     if targetPercent > 100 then targetPercent = 100 end
     
-    while Config.mobFarmEnabled and hum.Health > 0 and hum.MaxHealth > 0 do
+    print("[MobFarm] 🛡️ Đang hồi máu... chờ đến", targetPercent, "%")
+    
+    while Config.enabled and hum.Health > 0 and hum.MaxHealth > 0 do
         local hpPercent = (hum.Health / hum.MaxHealth) * 100
         if hpPercent >= targetPercent then
             break
@@ -174,7 +190,8 @@ local function retreatToSafety()
     hum.PlatformStand = previousPlatformStand
     
     -- Bay trở lại
-    if Config.mobFarmEnabled and hum.Health > 0 then
+    if Config.enabled and hum.Health > 0 then
+        print("[MobFarm] ✅ Hồi máu xong, tiếp tục farm")
         local returnPos = startPos + Vector3.new(0, 5, 0)
         pcall(function()
             tweenToPosition(returnPos, Config.tweenSpeed)
@@ -183,335 +200,56 @@ local function retreatToSafety()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- HỆ THỐNG FARM ORE (ĐÀO QUẶNG)
--- ═══════════════════════════════════════════════════════════════
-
---[[
-    Kiểm tra đá đã bị phá hủy chưa
-    @param rockModel - Model của đá
-    @return boolean
-]]
-local function isRockDestroyed(rockModel)
-    if not rockModel or not rockModel.Parent then
-        return true
-    end
-    
-    -- Tìm Health attribute
-    local healthAttr = rockModel:GetAttribute("Health")
-    if healthAttr == nil then
-        local rockChild = rockModel:FindFirstChild("Rock") or rockModel:FindFirstChild("Boulder")
-        if rockChild then
-            healthAttr = rockChild:GetAttribute("Health")
-        end
-    end
-    
-    local numeric = tonumber(healthAttr)
-    if numeric ~= nil then
-        return numeric <= 0
-    end
-    return false
-end
-
---[[
-    Thu thập tất cả đá trong phạm vi
-    @param maxDist (number) - Khoảng cách tối đa
-    @param origin (Vector3) - Vị trí gốc để tính khoảng cách
-    @return table - Danh sách đá: {model, core, rockType, requiredDamage, visual}
-]]
-local function collectAllRocks(maxDist, origin)
-    local rocksRoot = workspace:FindFirstChild("Rocks")
-    local result = {}
-    if not rocksRoot then return result end
-    
-    local scanDistSq = maxDist and (maxDist * maxDist)
-    
-    for _, folder in ipairs(rocksRoot:GetChildren()) do
-        for _, container in ipairs(folder:GetChildren()) do
-            -- Kiểm tra tồn tại
-            if not container or not container.Parent then continue end
-            
-            -- Tìm phần core (BasePart chính)
-            local core = container:IsA("BasePart") and container
-                or container.PrimaryPart
-                or container:FindFirstChild("HumanoidRootPart")
-                or container:FindFirstChildWhichIsA("BasePart")
-            
-            if not core then continue end
-            
-            -- Kiểm tra khoảng cách (dùng bình phương để tối ưu)
-            if scanDistSq and origin then
-                local pos = core.Position
-                local distSq = (pos.X - origin.X)^2 + (pos.Y - origin.Y)^2 + (pos.Z - origin.Z)^2
-                if distSq > scanDistSq then
-                    continue
-                end
-            end
-            
-            -- Kiểm tra còn sống
-            if isRockDestroyed(container) then
-                continue
-            end
-            
-            -- Tìm visual
-            local visual = container:FindFirstChild("Boulder")
-                or container:FindFirstChild("Rock")
-            if not visual then
-                for _, child in ipairs(container:GetChildren()) do
-                    if child:IsA("Model") or child:IsA("BasePart") then
-                        visual = child
-                        break
-                    end
-                end
-            end
-            
-            if visual then
-                local rockTypeName = container:GetAttribute("RockType")
-                    or visual:GetAttribute("RockType")
-                    or visual.Name
-                    or container.Name
-                    
-                local requiredDamage = tonumber(container:GetAttribute("RequiredDamage"))
-                    or tonumber(visual:GetAttribute("RequiredDamage"))
-                
-                table.insert(result, {
-                    model = container,
-                    core = core,
-                    rockType = rockTypeName,
-                    requiredDamage = requiredDamage,
-                    visual = visual,
-                })
-            end
-        end
-    end
-    return result
-end
-
---[[
-    Lấy tên các loại ore trong một đá
-    @param rockModel - Model của đá
-    @return table - Set các tên ore: {["Iron"] = true, ["Gold"] = true}
-]]
-local function getOreNamesForRock(rockModel)
-    local names = {}
-    local rockFolder = rockModel:FindFirstChild("Rock")
-    if not rockFolder then return names end
-    
-    for _, inst in ipairs(rockFolder:GetDescendants()) do
-        local oreNameAttr = inst:GetAttribute("Ore")
-        if oreNameAttr then
-            local oreName = tostring(oreNameAttr)
-            if oreName ~= "" then
-                names[oreName] = true
-            end
-        end
-    end
-    return names
-end
-
---[[
-    Kiểm tra đá có chứa ore mong muốn không
-    @param oreNames - Set tên ore trong đá
-    @param desiredSet - Set tên ore muốn farm
-    @return boolean
-]]
-local function hasDesiredOre(oreNames, desiredSet)
-    for name, _ in pairs(oreNames) do
-        if desiredSet[name] then
-            return true
-        end
-    end
-    return false
-end
-
---[[
-    Kiểm tra đá có chứa ore nào không
-    @param oreNames - Set tên ore
-    @return boolean
-]]
-local function rockHasAnyOre(oreNames)
-    for _, _ in pairs(oreNames) do
-        return true
-    end
-    return false
-end
-
---[[
-    Tìm đá gần nhất phù hợp với cấu hình
-    @param filteredRockTypes - Set loại đá muốn farm
-    @param blacklist - Set đá bị bỏ qua
-    @return table|nil - Thông tin đá: {model, core, rockType, ...}
-]]
-local function getNearestRock(filteredRockTypes, blacklist)
-    local hrp = getHumanoidRootPart()
-    if not hrp then return nil end
-    
-    local scanDist = Config.scanDistance or 500
-    local allRocks = collectAllRocks(scanDist, hrp.Position)
-    
-    if #allRocks == 0 then return nil end
-    
-    local best = nil
-    local bestDist = math.huge
-    local currentDmg = Config.pickaxeDamage or 0
-    blacklist = blacklist or {}
-    
-    for _, info in ipairs(allRocks) do
-        -- Bỏ qua đá trong blacklist
-        if blacklist[info.model] then continue end
-        
-        -- Kiểm tra loại đá
-        if not filteredRockTypes[info.rockType] then continue end
-        
-        -- Kiểm tra damage yêu cầu
-        local req = tonumber(info.requiredDamage)
-        if req and currentDmg < req then continue end
-        
-        -- Tìm gần nhất
-        local dist = (info.core.Position - hrp.Position).Magnitude
-        if dist < bestDist then
-            bestDist = dist
-            best = info
-        end
-    end
-    
-    return best
-end
-
---[[
-    Đào một đá
-    @param rockInfo - Thông tin đá từ getNearestRock
-    @param desiredOres - List ore muốn farm
-    @return string - "destroyed" | "switch" | "timeout"
-    
-    Cách hoạt động:
-    1. Gọi ToolService.ToolActivated("Pickaxe") liên tục
-    2. Kiểm tra ore trong đá có đúng loại không
-    3. Nếu ore sai → return "switch" để blacklist
-]]
-local function mineRock(rockInfo, desiredOres)
-    local rockModel = rockInfo.model
-    local startTick = tick()
-    
-    -- Lấy remote function
-    local toolServiceRF = ReplicatedStorage:WaitForChild("Shared")
-        :WaitForChild("Packages")
-        :WaitForChild("Knit")
-        :WaitForChild("Services")
-        :WaitForChild("ToolService")
-        :WaitForChild("RF")
-    local toolActivated = toolServiceRF:WaitForChild("ToolActivated")
-    
-    local args = { "Pickaxe" }
-    local desiredSet = listToSet(desiredOres)
-    local maxTime = Config.maxRockTime or 4
-    
-    while Config.oreFarmEnabled and rockModel.Parent and tick() - startTick < maxTime do
-        -- Kiểm tra đá đã chết
-        if isRockDestroyed(rockModel) then
-            return "destroyed"
-        end
-        
-        -- Kiểm tra khoảng cách
-        local core = rockInfo.core
-        local hrp = getHumanoidRootPart()
-        if core and hrp then
-            local dist = (core.Position - hrp.Position).Magnitude
-            if dist > 18 then
-                return "switch" -- Quá xa
-            end
-        end
-        
-        -- Kiểm tra ore
-        local oreNames = getOreNamesForRock(rockModel)
-        if rockHasAnyOre(oreNames) then
-            if hasDesiredOre(oreNames, desiredSet) then
-                -- Ore đúng → đào tiếp
-                pcall(function()
-                    toolActivated:InvokeServer(unpack(args))
-                end)
-            else
-                -- Ore sai → blacklist
-                return "switch"
-            end
-        else
-            -- Chưa thấy ore → cứ đào
-            pcall(function()
-                toolActivated:InvokeServer(unpack(args))
-            end)
-        end
-        
-        local interval = Config.mineInterval or 0.1
-        if interval < 0.02 then interval = 0.02 end
-        task.wait(interval)
-    end
-    
-    return "timeout"
-end
-
---[[
-    Trang bị pickaxe từ Backpack
-    @return Tool|nil
-]]
-local function ensurePickaxeEquipped()
-    local char = getCharacter()
-    local hum = getHumanoid()
-    
-    -- Kiểm tra đã trang bị chưa
-    for _, t in ipairs(char:GetChildren()) do
-        if t:IsA("Tool") and (t.Name:lower():find("pickaxe") or t:GetAttribute("ItemName") and tostring(t:GetAttribute("ItemName")):lower():find("pickaxe")) then
-            return t
-        end
-    end
-    
-    -- Tìm trong Backpack
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return nil end
-    
-    for _, t in ipairs(backpack:GetChildren()) do
-        if t:IsA("Tool") and (t.Name:lower():find("pickaxe") or t:GetAttribute("ItemName") and tostring(t:GetAttribute("ItemName")):lower():find("pickaxe")) then
-            pcall(function()
-                if hum then
-                    hum:EquipTool(t)
-                else
-                    t.Parent = char
-                end
-            end)
-            task.wait(0.1)
-            return t
-        end
-    end
-    
-    warn("[Farm] Không tìm thấy pickaxe!")
-    return nil
-end
-
--- ═══════════════════════════════════════════════════════════════
--- HỆ THỐNG FARM MOB (ĐÁNH QUÁI)
+-- HỆ THỐNG FARM MOB
 -- ═══════════════════════════════════════════════════════════════
 
 --[[
     Kiểm tra mob đã chết chưa
+    
     @param model - Model của mob
-    @return boolean
+    @return boolean - true nếu đã chết
+    
+    Kiểm tra:
+    - Tìm BoolValue tên "Dead" trong model
+    - Nếu Dead.Value == true → mob đã chết
 ]]
 local function isMobDead(model)
-    if not model then return false end
+    if not model then return true end
+    if not model.Parent then return true end
+    
     local deadFlag = model:FindFirstChild("Dead", true)
     if deadFlag and deadFlag:IsA("BoolValue") then
         return deadFlag.Value == true
     end
+    
+    -- Kiểm tra Humanoid
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then
+        return true
+    end
+    
     return false
 end
 
 --[[
     Thu thập tất cả mob theo loại đã chọn
-    @param selectedSet - Set loại mob muốn farm
-    @return table - Danh sách mob: {model, hrp, mobType}
+    
+    @param selectedSet - Set loại mob muốn farm: {["Zombie"] = true}
+    @return table - Danh sách: {{model, hrp, mobType}, ...}
+    
+    Cách hoạt động:
+    1. Quét workspace.Living
+    2. Bỏ qua mob đã chết
+    3. Chuẩn hóa tên (bỏ số cuối)
+    4. Kiểm tra có trong selectedSet không
 ]]
 local function collectMobs(selectedSet)
     local living = workspace:FindFirstChild("Living")
     local result = {}
     if not living then return result end
+    
+    local hrp = getHumanoidRootPart()
+    local maxDistSq = Config.scanDistance * Config.scanDistance
     
     for _, inst in ipairs(living:GetChildren()) do
         if not inst:IsA("Model") then continue end
@@ -526,11 +264,17 @@ local function collectMobs(selectedSet)
         if not selectedSet[baseName] then continue end
         
         -- Tìm HumanoidRootPart
-        local hrp = inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChild("HRP")
-        if hrp and hrp:IsA("BasePart") then
+        local mobHrp = inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChild("HRP")
+        if mobHrp and mobHrp:IsA("BasePart") then
+            -- Kiểm tra khoảng cách
+            if hrp then
+                local distSq = (mobHrp.Position - hrp.Position).Magnitude ^ 2
+                if distSq > maxDistSq then continue end
+            end
+            
             table.insert(result, {
                 model = inst,
-                hrp = hrp,
+                hrp = mobHrp,
                 mobType = baseName,
             })
         end
@@ -541,8 +285,9 @@ end
 
 --[[
     Tìm mob gần nhất
+    
     @param selectedSet - Set loại mob muốn farm
-    @return table|nil - Thông tin mob: {model, hrp, mobType}
+    @return table|nil - {model, hrp, mobType} hoặc nil
 ]]
 local function getNearestMob(selectedSet)
     local mobs = collectMobs(selectedSet)
@@ -567,7 +312,11 @@ end
 
 --[[
     Tấn công một mob
-    @param mobInfo - Thông tin mob từ getNearestMob
+    
+    @param mobInfo - {model, hrp, mobType}
+    
+    Gọi RemoteFunction:
+    ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated("Weapon")
 ]]
 local function attackMob(mobInfo)
     local mobModel = mobInfo.model
@@ -590,7 +339,8 @@ end
 
 --[[
     Kiểm tra HP có thấp không
-    @return boolean
+    
+    @return boolean - true nếu HP <= safeHealthPercent
 ]]
 local function isLowHealth()
     local hum = getHumanoid()
@@ -601,7 +351,10 @@ end
 
 --[[
     Trang bị weapon từ Backpack
+    
     @return Tool|nil
+    
+    Tìm tool có tên "Weapon" trong Character hoặc Backpack
 ]]
 local function ensureWeaponEquipped()
     local char = getCharacter()
@@ -633,84 +386,35 @@ local function ensureWeaponEquipped()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOPS (VÒNG LẶP CHÍNH)
+-- MAIN LOOP
 -- ═══════════════════════════════════════════════════════════════
 
 --[[
-    Bắt đầu auto farm ore
-    Gọi hàm này để bật farm
-]]
-local function startOreFarm()
-    Config.oreFarmEnabled = true
-    
-    task.spawn(function()
-        local blacklistCleanupTimer = 0
-        
-        while Config.oreFarmEnabled do
-            -- Dọn blacklist mỗi 30 giây
-            if tick() - blacklistCleanupTimer > 30 then
-                table.clear(rockBlacklist)
-                blacklistCleanupTimer = tick()
-            end
-            
-            -- Trang bị pickaxe
-            local pick = ensurePickaxeEquipped()
-            if not pick then
-                task.wait(0.1)
-                continue
-            end
-            
-            -- Tìm đá
-            local rockSet = listToSet(Config.selectedRockTypes)
-            local targetRock = getNearestRock(rockSet, rockBlacklist)
-            
-            if not targetRock then
-                table.clear(rockBlacklist) -- Không có đá → xóa blacklist thử lại
-                task.wait(0.5)
-                continue
-            end
-            
-            -- Di chuyển đến đá
-            local core = targetRock.core
-            if core and core:IsA("BasePart") then
-                pcall(function()
-                    tweenToPosition(core.Position, Config.tweenSpeed)
-                end)
-            end
-            
-            -- Kiểm tra còn bật và đá còn tồn tại
-            if not Config.oreFarmEnabled then break end
-            if not targetRock.model or not targetRock.model.Parent then continue end
-            
-            -- Đào
-            local result = mineRock(targetRock, Config.selectedOreTypes)
-            
-            -- Nếu ore sai → blacklist
-            if result == "switch" then
-                rockBlacklist[targetRock.model] = true
-                print("[Farm] Blacklist đá có ore sai")
-            end
-        end
-    end)
-end
-
---[[
-    Dừng farm ore
-]]
-local function stopOreFarm()
-    Config.oreFarmEnabled = false
-end
-
---[[
     Bắt đầu auto farm mob
+    
+    Vòng lặp:
+    1. Kiểm tra HP thấp → rút lui
+    2. Trang bị vũ khí
+    3. Tìm mob gần nhất
+    4. Bay đến mob
+    5. Tấn công
+    6. Lặp lại
 ]]
-local function startMobFarm()
-    Config.mobFarmEnabled = true
+local function start()
+    if Config.enabled then
+        print("[MobFarm] ⚠️ Đã đang chạy!")
+        return
+    end
+    
+    Config.enabled = true
+    print("[MobFarm] ✅ BẬT farm mob")
+    print("[MobFarm] 📋 Đang farm:", table.concat(Config.selectedMobs, ", "))
     
     task.spawn(function()
-        while Config.mobFarmEnabled do
+        while Config.enabled do
             -- Kiểm tra HP thấp → rút lui
             if isLowHealth() then
+                print("[MobFarm] ⚠️ HP thấp! Rút lui...")
                 retreatToSafety()
                 continue
             end
@@ -731,17 +435,28 @@ local function startMobFarm()
                 continue
             end
             
-            -- Di chuyển đến mob
+            -- Tính vị trí đứng để tấn công
             local mobHrp = target.hrp
             if mobHrp and mobHrp:IsA("BasePart") then
+                local targetPos = mobHrp.Position
+                
+                -- Nếu bật chế độ đứng phía sau mob
+                if Config.attackFromBehind then
+                    -- Lấy hướng nhìn của mob (LookVector)
+                    local lookVector = mobHrp.CFrame.LookVector
+                    -- Vị trí phía sau = vị trí mob - (hướng nhìn * khoảng cách)
+                    local behindDist = Config.behindDistance or 5
+                    targetPos = mobHrp.Position - (lookVector * behindDist)
+                end
+                
                 pcall(function()
-                    tweenToPosition(mobHrp.Position, Config.tweenSpeed)
+                    tweenToPosition(targetPos, Config.tweenSpeed)
                 end)
             end
             
             -- Kiểm tra mob đã chết khi di chuyển
             if isMobDead(target.model) then continue end
-            if not Config.mobFarmEnabled then break end
+            if not Config.enabled then break end
             if not target.model or not target.model.Parent then continue end
             
             -- Tấn công
@@ -751,14 +466,57 @@ local function startMobFarm()
             if interval < 0.02 then interval = 0.02 end
             task.wait(interval)
         end
+        
+        print("[MobFarm] ❌ Đã TẮT farm mob")
     end)
 end
 
 --[[
     Dừng farm mob
 ]]
-local function stopMobFarm()
-    Config.mobFarmEnabled = false
+local function stop()
+    Config.enabled = false
+    print("[MobFarm] 🛑 Đang dừng farm...")
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- DEBUG FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
+
+--[[
+    In danh sách mob trong game
+]]
+local function listAllMobs()
+    local living = workspace:FindFirstChild("Living")
+    if not living then
+        print("[MobFarm] ❌ Không tìm thấy workspace.Living")
+        return {}
+    end
+    
+    local mobNames = {}
+    print("\n═══ DANH SÁCH MOB ═══")
+    for _, mob in ipairs(living:GetChildren()) do
+        if mob:IsA("Model") then
+            local baseName = normalizeMobName(mob.Name)
+            if not mobNames[baseName] then
+                mobNames[baseName] = true
+                local hrp = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("HRP")
+                local dead = isMobDead(mob)
+                print(string.format("  %s | HRP: %s | Dead: %s", 
+                    baseName, 
+                    hrp and "✅" or "❌",
+                    dead and "💀" or "✅"
+                ))
+            end
+        end
+    end
+    print("═══════════════════════\n")
+    
+    local result = {}
+    for name in pairs(mobNames) do
+        table.insert(result, name)
+    end
+    return result
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -769,31 +527,24 @@ return {
     -- Cấu hình
     Config = Config,
     
-    -- Tween Functions
+    -- Main functions
+    start = start,
+    stop = stop,
+    
+    -- Tween
     tweenToPosition = tweenToPosition,
     retreatToSafety = retreatToSafety,
     
-    -- Ore Farm Functions
-    collectAllRocks = collectAllRocks,
-    getNearestRock = getNearestRock,
-    getOreNamesForRock = getOreNamesForRock,
-    mineRock = mineRock,
-    ensurePickaxeEquipped = ensurePickaxeEquipped,
-    startOreFarm = startOreFarm,
-    stopOreFarm = stopOreFarm,
-    
-    -- Mob Farm Functions
+    -- Mob functions
     collectMobs = collectMobs,
     getNearestMob = getNearestMob,
     attackMob = attackMob,
     ensureWeaponEquipped = ensureWeaponEquipped,
-    startMobFarm = startMobFarm,
-    stopMobFarm = stopMobFarm,
     
     -- Helpers
-    isRockDestroyed = isRockDestroyed,
     isMobDead = isMobDead,
     isLowHealth = isLowHealth,
+    listAllMobs = listAllMobs,
 }
 
 --[[
@@ -802,33 +553,25 @@ HƯỚNG DẪN SỬ DỤNG
 ═══════════════════════════════════════════════════════════════
 
 -- 1. Load module
-local FarmModule = loadstring(game:HttpGet("YOUR_URL"))()
+local MobFarm = loadstring(game:HttpGet("YOUR_URL"))()
 
--- 2. Cấu hình farm ore
-FarmModule.Config.selectedRockTypes = {"Boulder", "Stone"}
-FarmModule.Config.selectedOreTypes = {"Iron", "Gold", "Diamond"}
-FarmModule.Config.scanDistance = 300
-FarmModule.Config.tweenSpeed = 100
+-- 2. Xem danh sách mob trong game
+MobFarm.listAllMobs()
 
--- 3. Bật farm ore
-FarmModule.startOreFarm()
+-- 3. Cấu hình mob muốn farm
+MobFarm.Config.selectedMobs = {"Zombie", "Skeleton", "Goblin"}
 
--- 4. Tắt farm ore
-FarmModule.stopOreFarm()
+-- 4. Cấu hình khác (tùy chọn)
+MobFarm.Config.tweenSpeed = 150          -- Tốc độ bay
+MobFarm.Config.attackInterval = 0.05     -- Tốc độ đánh
+MobFarm.Config.safeHealthPercent = 25    -- HP% rút lui
+MobFarm.Config.scanDistance = 300        -- Phạm vi quét
 
--- 5. Cấu hình farm mob
-FarmModule.Config.selectedMobs = {"Zombie", "Skeleton", "Brute Zombie"}
-FarmModule.Config.safeHealthPercent = 25
+-- 5. Bật farm
+MobFarm.start()
 
--- 6. Bật farm mob
-FarmModule.startMobFarm()
-
--- 7. Tắt farm mob
-FarmModule.stopMobFarm()
-
--- 8. Di chuyển thủ công
-FarmModule.tweenToPosition(Vector3.new(100, 50, 200), 150)
+-- 6. Tắt farm
+MobFarm.stop()
 
 ═══════════════════════════════════════════════════════════════
 ]]
-
