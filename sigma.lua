@@ -26,7 +26,7 @@ local Config = {
     
     -- Ore Farm Settings
     oreFarmEnabled = false,
-    selectedRockTypes = {"Boulder"},    -- ✅ Farm đá Boulder
+    selectedRockTypes = {"Pebble"},     -- ✅ Farm đá Pebble
     selectedOreTypes = {"Pebble"},      -- ✅ Farm quặng Pebble
     scanDistance = 500,         -- Phạm vi quét (studs)
     maxRockTime = 4,            -- Thời gian tối đa đào 1 đá (giây)
