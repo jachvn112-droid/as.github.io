@@ -30,7 +30,7 @@ local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 -- ═══════════════════════════════════════════════════════════════
 local Config = {
     -- Tween Settings
-    tweenSpeed = 30,           -- Tốc độ di chuyển (studs/giây)
+    tweenSpeed = 5,           -- Tốc độ di chuyển (studs/giây)
     flyHeight = 3,              -- Độ cao bay so với mục tiêu
     
     -- Mob Farm Settings
